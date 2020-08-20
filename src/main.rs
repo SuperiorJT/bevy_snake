@@ -1,20 +1,34 @@
-use bevy::{ecs::Mut, prelude::*};
-use std::collections::LinkedList;
+use bevy::prelude::*;
+use rand::Rng;
+use std::collections::{HashSet, LinkedList};
 
-const GRID_SIZE: usize = 30;
+const GRID_SIZE: i32 = 3;
 const GRID_UNIT: f32 = 30.0;
 
 fn main() {
     App::build()
         .add_default_plugins()
-        .add_resource(SnakeMovementTimer(Timer::from_seconds(0.5)))
+        .add_resource(SnakeMovementTimer(Timer::from_seconds(0.3)))
+        .add_resource(FreeLocations(HashSet::new()))
         .add_startup_system(setup.system())
+        .add_startup_stage("init_free_locations")
+        .add_startup_system_to_stage("init_free_locations", init_free_locations.system())
         .add_system(snake_movement_system.system())
         .add_system(player_input_system.system())
+        .add_system(snake_collision_system.system())
         .run();
 }
 
+enum GameState {
+    PreGame,
+    Running,
+    PostGame,
+}
+struct PreGameTimer(Timer);
+struct PostGameTimer(Timer);
 struct SnakeMovementTimer(Timer);
+
+struct FreeLocations(HashSet<GridPosition>);
 
 struct KeyBinds {
     up: KeyCode,
@@ -39,6 +53,9 @@ struct SnakeHead;
 struct SnakeTail;
 struct SnakeBody;
 
+struct Food;
+
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 struct GridPosition {
     x: i32,
     y: i32,
@@ -47,12 +64,6 @@ impl GridPosition {
     pub fn new(x: i32, y: i32) -> GridPosition {
         GridPosition { x, y }
     }
-}
-
-enum Collider {
-    Solid,
-    Piece,
-    None,
 }
 
 fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
@@ -122,12 +133,82 @@ fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
             left: KeyCode::Left,
             right: KeyCode::Right,
         });
+
+    commands
+        .spawn(SpriteComponents {
+            material: materials.add(Color::WHITE.into()),
+            translation: Translation(Vec3::new(GRID_UNIT * -3.0, GRID_UNIT * 2.0, 0.0)),
+            sprite: Sprite {
+                size: Vec2::new(GRID_UNIT, GRID_UNIT),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .with(Food)
+        .with(GridPosition::new(-3, 2));
+
+    // walls
+    let grid_size_float = GRID_SIZE as f32;
+    let wall_length = (grid_size_float * 2.0 + 3.0) * GRID_UNIT;
+    commands.spawn(SpriteComponents {
+        material: materials.add(Color::BLACK.into()),
+        translation: Translation(Vec3::new(-(GRID_SIZE + 1) as f32 * GRID_UNIT, 0.0, 0.0)),
+        sprite: Sprite {
+            size: Vec2::new(GRID_UNIT, wall_length),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    commands.spawn(SpriteComponents {
+        material: materials.add(Color::BLACK.into()),
+        translation: Translation(Vec3::new((GRID_SIZE + 1) as f32 * GRID_UNIT, 0.0, 0.0)),
+        sprite: Sprite {
+            size: Vec2::new(GRID_UNIT, wall_length),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    commands.spawn(SpriteComponents {
+        material: materials.add(Color::BLACK.into()),
+        translation: Translation(Vec3::new(0.0, -(GRID_SIZE + 1) as f32 * GRID_UNIT, 0.0)),
+        sprite: Sprite {
+            size: Vec2::new(wall_length, GRID_UNIT),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    commands.spawn(SpriteComponents {
+        material: materials.add(Color::BLACK.into()),
+        translation: Translation(Vec3::new(0.0, (GRID_SIZE + 1) as f32 * GRID_UNIT, 0.0)),
+        sprite: Sprite {
+            size: Vec2::new(wall_length, GRID_UNIT),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+}
+
+fn init_free_locations(
+    mut free_locations: ResMut<FreeLocations>,
+    mut grid_pos_query: Query<&GridPosition>,
+) {
+    for x in -GRID_SIZE..GRID_SIZE {
+        for y in -GRID_SIZE..GRID_SIZE {
+            free_locations.0.insert(GridPosition::new(x, y));
+        }
+    }
+    for pos in &mut grid_pos_query.iter() {
+        free_locations.0.remove(pos);
+    }
 }
 
 fn snake_movement_system(
     mut commands: Commands,
     time: Res<Time>,
     mut snake_timer: ResMut<SnakeMovementTimer>,
+    mut free_locations: ResMut<FreeLocations>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut food_query: Query<(&Food, &mut GridPosition, &mut Translation)>,
     mut snake_query: Query<&mut Snake>,
     mut head_query: Query<(&SnakeHead, Entity, &GridPosition, &Translation)>,
     mut tail_query: Query<(&SnakeTail, Entity, &mut GridPosition, &mut Translation)>,
@@ -141,52 +222,109 @@ fn snake_movement_system(
     for mut snake in &mut snake_query.iter() {
         for (_segment, head_entity, head_grid_pos, head_translation) in &mut head_query.iter() {
             for (_segment, tail_entity, mut grid_pos, mut translation) in &mut tail_query.iter() {
-                grid_pos.x = head_grid_pos.x;
-                grid_pos.y = head_grid_pos.y;
-
-                *translation.0.x_mut() = head_translation.0.x();
-                *translation.0.y_mut() = head_translation.0.y();
+                let mut pending_next_pos = GridPosition::new(head_grid_pos.x, head_grid_pos.y);
+                let mut pending_translation = Translation(Vec3::new(
+                    head_translation.0.x(),
+                    head_translation.0.y(),
+                    head_translation.0.z(),
+                ));
 
                 match snake.direction {
                     SnakeDirection::Up => {
-                        grid_pos.y += 1;
-                        *translation.0.y_mut() += GRID_UNIT
+                        pending_next_pos.y += 1;
+                        *pending_translation.0.y_mut() += GRID_UNIT
                     }
                     SnakeDirection::Down => {
-                        grid_pos.y = grid_pos.y - 1;
-                        *translation.0.y_mut() += -GRID_UNIT
+                        pending_next_pos.y = pending_next_pos.y - 1;
+                        *pending_translation.0.y_mut() += -GRID_UNIT
                     }
                     SnakeDirection::Left => {
-                        grid_pos.x = grid_pos.x - 1;
-                        *translation.0.x_mut() += -GRID_UNIT
+                        pending_next_pos.x = pending_next_pos.x - 1;
+                        *pending_translation.0.x_mut() += -GRID_UNIT
                     }
                     SnakeDirection::Right => {
-                        grid_pos.x += 1;
-                        *translation.0.x_mut() += GRID_UNIT
+                        pending_next_pos.x += 1;
+                        *pending_translation.0.x_mut() += GRID_UNIT
                     }
                 }
 
-                commands.remove_one::<SnakeTail>(tail_entity);
-                commands.insert_one(tail_entity, SnakeHead);
+                for (_food, mut food_pos, mut food_translation) in &mut food_query.iter() {
+                    if pending_next_pos == *food_pos {
+                        commands.remove_one::<SnakeHead>(head_entity);
+                        commands.insert_one(head_entity, SnakeBody);
+
+                        snake.body.push_front(
+                            commands
+                                .spawn(SpriteComponents {
+                                    material: materials.add(Color::WHITE.into()),
+                                    translation: Translation(Vec3::new(
+                                        GRID_UNIT * food_pos.x as f32,
+                                        GRID_UNIT * food_pos.y as f32,
+                                        0.0,
+                                    )),
+                                    sprite: Sprite {
+                                        size: Vec2::new(GRID_UNIT, GRID_UNIT),
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                })
+                                .with(SnakeHead)
+                                .with(*food_pos)
+                                .current_entity()
+                                .unwrap(),
+                        );
+
+                        println!("{:?}", free_locations.0);
+
+                        let new_pos = get_random_location(&free_locations);
+
+                        println!("{:?}", new_pos);
+
+                        food_pos.x = new_pos.x;
+                        food_pos.y = new_pos.y;
+
+                        *food_translation.0.x_mut() = GRID_UNIT * food_pos.x as f32;
+                        *food_translation.0.y_mut() = GRID_UNIT * food_pos.y as f32;
+
+                        free_locations.0.remove(&*food_pos);
+                    } else {
+                        free_locations
+                            .0
+                            .insert(GridPosition::new(grid_pos.x, grid_pos.y));
+
+                        grid_pos.x = pending_next_pos.x;
+                        grid_pos.y = pending_next_pos.y;
+
+                        *translation.0.x_mut() = pending_translation.0.x();
+                        *translation.0.y_mut() = pending_translation.0.y();
+
+                        free_locations.0.remove(&*grid_pos);
+
+                        commands.remove_one::<SnakeTail>(tail_entity);
+                        commands.insert_one(tail_entity, SnakeHead);
+
+                        commands.remove_one::<SnakeHead>(head_entity);
+                        commands.insert_one(head_entity, SnakeBody);
+
+                        if let Some(e) = snake.body.pop_back() {
+                            snake.body.push_front(e);
+                        }
+
+                        let tail_entity = snake.body.back().unwrap();
+
+                        for (_segment, entity, mut _grid_pos, mut _translation) in
+                            &mut body_query.iter()
+                        {
+                            if entity != *tail_entity {
+                                continue;
+                            }
+
+                            commands.remove_one::<SnakeBody>(entity);
+                            commands.insert_one(entity, SnakeTail);
+                        }
+                    }
+                }
             }
-
-            commands.remove_one::<SnakeHead>(head_entity);
-            commands.insert_one(head_entity, SnakeBody);
-        }
-
-        if let Some(e) = snake.body.pop_back() {
-            snake.body.push_front(e);
-        }
-
-        let tail_entity = snake.body.back().unwrap();
-
-        for (_segment, entity, mut _grid_pos, mut _translation) in &mut body_query.iter() {
-            if entity != *tail_entity {
-                continue;
-            }
-
-            commands.remove_one::<SnakeBody>(entity);
-            commands.insert_one(entity, SnakeTail);
         }
     }
 
@@ -223,4 +361,17 @@ fn player_input_system(
             snake.direction = SnakeDirection::Right;
         }
     }
+}
+
+fn snake_collision_system(mut head_query: Query<(&SnakeHead, &GridPosition)>) {
+    for (_head, pos) in &mut head_query.iter() {
+        if pos.x > GRID_SIZE || pos.x < -GRID_SIZE || pos.y > GRID_SIZE || pos.y < -GRID_SIZE {
+            // Restart
+        }
+    }
+}
+
+fn get_random_location(locations: &ResMut<FreeLocations>) -> GridPosition {
+    let index = rand::thread_rng().gen_range(0, locations.0.len());
+    *locations.0.iter().nth(index).unwrap()
 }
