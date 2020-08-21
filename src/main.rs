@@ -9,7 +9,12 @@ fn main() {
     App::build()
         .add_default_plugins()
         .add_resource(SnakeMovementTimer(Timer::from_seconds(0.3)))
+        .add_resource(PostGameTimer(Timer::from_seconds(4.0)))
+        .add_resource(PreGameTimer(Timer::from_seconds(3.0)))
         .add_resource(FreeLocations(HashSet::new()))
+        .add_resource(GameState {
+            stage: GameStateStage::PreGame,
+        })
         .add_startup_system(setup.system())
         .add_startup_stage("init_free_locations")
         .add_startup_system_to_stage("init_free_locations", init_free_locations.system())
@@ -19,10 +24,14 @@ fn main() {
         .run();
 }
 
-enum GameState {
+struct GameState {
+    stage: GameStateStage,
+}
+enum GameStateStage {
     PreGame,
     Running,
-    PostGame,
+    PostGameWin,
+    PostGameLose,
 }
 struct PreGameTimer(Timer);
 struct PostGameTimer(Timer);
@@ -363,13 +372,58 @@ fn player_input_system(
     }
 }
 
-fn snake_collision_system(mut head_query: Query<(&SnakeHead, &GridPosition)>) {
+fn snake_collision_system(
+    mut state: ResMut<GameState>,
+    mut head_query: Query<(&SnakeHead, &GridPosition)>,
+) {
     for (_head, pos) in &mut head_query.iter() {
         if pos.x > GRID_SIZE || pos.x < -GRID_SIZE || pos.y > GRID_SIZE || pos.y < -GRID_SIZE {
-            // Restart
+            state.stage = GameStateStage::PostGameLose;
         }
     }
 }
+
+fn post_game_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut state: ResMut<GameState>,
+    mut timer: ResMut<PostGameTimer>,
+) {
+    let win = match state.stage {
+        GameStateStage::PostGameLose => false,
+        GameStateStage::PostGameWin => true,
+        _ => return,
+    };
+
+    if timer.0.elapsed == 0.0 {
+        if win {
+            scene_init_win(&mut commands);
+        } else {
+            scene_init_lose(&mut commands);
+        }
+    }
+
+    timer.0.tick(time.delta_seconds);
+
+    if timer.0.finished {
+        if win {
+            scene_destroy_win(&mut commands);
+        } else {
+            scene_destroy_lose(&mut commands);
+        }
+
+        state.stage = GameStateStage::PreGame;
+        timer.0.reset();
+    }
+}
+
+fn scene_init_win(mut commands: &mut Commands) {}
+
+fn scene_destroy_win(mut commands: &mut Commands) {}
+
+fn scene_init_lose(mut commands: &mut Commands) {}
+
+fn scene_destroy_lose(mut commands: &mut Commands) {}
 
 fn get_random_location(locations: &ResMut<FreeLocations>) -> GridPosition {
     let index = rand::thread_rng().gen_range(0, locations.0.len());
