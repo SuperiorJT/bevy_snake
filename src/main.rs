@@ -8,19 +8,20 @@ const GRID_UNIT: f32 = 30.0;
 fn main() {
     App::build()
         .add_default_plugins()
-        .add_resource(SnakeMovementTimer(Timer::from_seconds(0.3)))
-        .add_resource(PostGameTimer(Timer::from_seconds(4.0)))
-        .add_resource(PreGameTimer(Timer::from_seconds(3.0)))
+        .add_resource(SnakeMovementTimer(Timer::from_seconds(0.3, false)))
+        .add_resource(PostGameTimer(Timer::from_seconds(4.0, false)))
+        .add_resource(PreGameTimer(Timer::from_seconds(3.0, false)))
         .add_resource(FreeLocations(HashSet::new()))
         .add_resource(GameState {
             stage: GameStateStage::PreGame,
         })
         .add_startup_system(setup.system())
-        .add_startup_stage("init_free_locations")
-        .add_startup_system_to_stage("init_free_locations", init_free_locations.system())
         .add_system(snake_movement_system.system())
         .add_system(player_input_system.system())
         .add_system(snake_collision_system.system())
+        .add_system(pre_game_system.system())
+        .add_system(post_game_system.system())
+        // .add_system(debug_food_sprite_system.system())
         .run();
 }
 
@@ -30,8 +31,7 @@ struct GameState {
 enum GameStateStage {
     PreGame,
     Running,
-    PostGameWin,
-    PostGameLose,
+    PostGame,
 }
 struct PreGameTimer(Timer);
 struct PostGameTimer(Timer);
@@ -49,8 +49,10 @@ struct KeyBinds {
 struct Snake {
     body: LinkedList<Entity>,
     direction: SnakeDirection,
+    last_direction: SnakeDirection,
 }
 
+#[derive(Copy, Clone)]
 enum SnakeDirection {
     Up,
     Down,
@@ -76,85 +78,7 @@ impl GridPosition {
 }
 
 fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
-    let mut snake_body = LinkedList::new();
-
     commands.spawn(Camera2dComponents::default());
-
-    snake_body.push_front(
-        commands
-            .spawn(SpriteComponents {
-                material: materials.add(Color::WHITE.into()),
-                translation: Translation(Vec3::new(0.0, 0.0, 0.0)),
-                sprite: Sprite {
-                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .with(SnakeTail)
-            .with(GridPosition::new(0, 0))
-            .current_entity()
-            .unwrap(),
-    );
-
-    snake_body.push_front(
-        commands
-            .spawn(SpriteComponents {
-                material: materials.add(Color::WHITE.into()),
-                translation: Translation(Vec3::new(0.0, GRID_UNIT, 0.0)),
-                sprite: Sprite {
-                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .with(SnakeBody)
-            .with(GridPosition::new(0, 1))
-            .current_entity()
-            .unwrap(),
-    );
-
-    snake_body.push_front(
-        commands
-            .spawn(SpriteComponents {
-                material: materials.add(Color::WHITE.into()),
-                translation: Translation(Vec3::new(0.0, GRID_UNIT * 2.0, 0.0)),
-                sprite: Sprite {
-                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .with(SnakeHead)
-            .with(GridPosition::new(0, 2))
-            .current_entity()
-            .unwrap(),
-    );
-
-    commands
-        .spawn((Snake {
-            body: snake_body,
-            direction: SnakeDirection::Up,
-        },))
-        .with(KeyBinds {
-            up: KeyCode::Up,
-            down: KeyCode::Down,
-            left: KeyCode::Left,
-            right: KeyCode::Right,
-        });
-
-    commands
-        .spawn(SpriteComponents {
-            material: materials.add(Color::WHITE.into()),
-            translation: Translation(Vec3::new(GRID_UNIT * -3.0, GRID_UNIT * 2.0, 0.0)),
-            sprite: Sprite {
-                size: Vec2::new(GRID_UNIT, GRID_UNIT),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .with(Food)
-        .with(GridPosition::new(-3, 2));
 
     // walls
     let grid_size_float = GRID_SIZE as f32;
@@ -197,23 +121,126 @@ fn setup(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     });
 }
 
-fn init_free_locations(
-    mut free_locations: ResMut<FreeLocations>,
-    mut grid_pos_query: Query<&GridPosition>,
+fn spawn_game_entities(
+    commands: &mut Commands,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+    mut free_locations: &mut ResMut<FreeLocations>,
 ) {
+    let mut snake_entity_list = LinkedList::new();
+    let tail_pos = GridPosition::new(0, 0);
+    let body_pos = GridPosition::new(0, 1);
+    let head_pos = GridPosition::new(0, 2);
+    let food_pos = GridPosition::new(-3, 2);
+    snake_entity_list.push_front(
+        commands
+            .spawn(SpriteComponents {
+                material: materials.add(Color::WHITE.into()),
+                translation: Translation(Vec3::new(0.0, 0.0, 0.0)),
+                sprite: Sprite {
+                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .with(SnakeTail)
+            .with(tail_pos)
+            .current_entity()
+            .unwrap(),
+    );
+
+    snake_entity_list.push_front(
+        commands
+            .spawn(SpriteComponents {
+                material: materials.add(Color::WHITE.into()),
+                translation: Translation(Vec3::new(0.0, GRID_UNIT, 0.0)),
+                sprite: Sprite {
+                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .with(SnakeBody)
+            .with(body_pos)
+            .current_entity()
+            .unwrap(),
+    );
+
+    snake_entity_list.push_front(
+        commands
+            .spawn(SpriteComponents {
+                material: materials.add(Color::WHITE.into()),
+                translation: Translation(Vec3::new(0.0, GRID_UNIT * 2.0, 0.0)),
+                sprite: Sprite {
+                    size: Vec2::new(GRID_UNIT, GRID_UNIT),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .with(SnakeHead)
+            .with(head_pos)
+            .current_entity()
+            .unwrap(),
+    );
+
+    commands
+        .spawn((Snake {
+            body: snake_entity_list,
+            direction: SnakeDirection::Up,
+            last_direction: SnakeDirection::Up,
+        },))
+        .with(KeyBinds {
+            up: KeyCode::Up,
+            down: KeyCode::Down,
+            left: KeyCode::Left,
+            right: KeyCode::Right,
+        });
+
+    commands
+        .spawn(SpriteComponents {
+            material: materials.add(Color::WHITE.into()),
+            translation: Translation(Vec3::new(GRID_UNIT * -3.0, GRID_UNIT * 2.0, 0.0)),
+            sprite: Sprite {
+                size: Vec2::new(GRID_UNIT / 2.0, GRID_UNIT / 2.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .with(Food)
+        .with(food_pos);
+
+    init_free_locations(&mut free_locations);
+    free_locations.0.remove(&tail_pos);
+    free_locations.0.remove(&body_pos);
+    free_locations.0.remove(&head_pos);
+    free_locations.0.remove(&food_pos);
+}
+
+fn despawn_game_entities(
+    commands: &mut Commands,
+    snake_entity_list: &LinkedList<Entity>,
+    food_entity: Entity,
+    snake_entity: Entity,
+) {
+    snake_entity_list.iter().for_each(|e| {
+        commands.despawn(*e);
+    });
+    commands.despawn(food_entity);
+    commands.despawn(snake_entity);
+}
+
+fn init_free_locations(free_locations: &mut ResMut<FreeLocations>) {
+    free_locations.0.clear();
     for x in -GRID_SIZE..GRID_SIZE {
         for y in -GRID_SIZE..GRID_SIZE {
             free_locations.0.insert(GridPosition::new(x, y));
         }
-    }
-    for pos in &mut grid_pos_query.iter() {
-        free_locations.0.remove(pos);
     }
 }
 
 fn snake_movement_system(
     mut commands: Commands,
     time: Res<Time>,
+    mut state: ResMut<GameState>,
     mut snake_timer: ResMut<SnakeMovementTimer>,
     mut free_locations: ResMut<FreeLocations>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -223,10 +250,15 @@ fn snake_movement_system(
     mut tail_query: Query<(&SnakeTail, Entity, &mut GridPosition, &mut Translation)>,
     mut body_query: Query<(&SnakeBody, Entity, &GridPosition, &Translation)>,
 ) {
+    match state.stage {
+        GameStateStage::Running => {}
+        _ => return,
+    }
     snake_timer.0.tick(time.delta_seconds);
     if !snake_timer.0.finished {
         return;
     }
+    snake_timer.0.reset();
 
     for mut snake in &mut snake_query.iter() {
         for (_segment, head_entity, head_grid_pos, head_translation) in &mut head_query.iter() {
@@ -257,18 +289,40 @@ fn snake_movement_system(
                     }
                 }
 
+                snake.last_direction = snake.direction;
+
+                for (_segment, _e, body_grid_pos, mut _translation) in &mut body_query.iter() {
+                    if *body_grid_pos == pending_next_pos {
+                        state.stage = GameStateStage::PostGame;
+                        return;
+                    }
+                }
+
                 for (_food, mut food_pos, mut food_translation) in &mut food_query.iter() {
                     if pending_next_pos == *food_pos {
                         commands.remove_one::<SnakeHead>(head_entity);
                         commands.insert_one(head_entity, SnakeBody);
+
+                        let head_pos = food_pos.clone();
+                        let new_pos = get_random_location(&free_locations);
+
+                        food_pos.x = new_pos.x;
+                        food_pos.y = new_pos.y;
+
+                        *food_translation.0.x_mut() = GRID_UNIT * food_pos.x as f32;
+                        *food_translation.0.y_mut() = GRID_UNIT * food_pos.y as f32;
+
+                        println!("{:?}, {:?}", food_pos, food_translation.0);
+
+                        free_locations.0.remove(&*food_pos);
 
                         snake.body.push_front(
                             commands
                                 .spawn(SpriteComponents {
                                     material: materials.add(Color::WHITE.into()),
                                     translation: Translation(Vec3::new(
-                                        GRID_UNIT * food_pos.x as f32,
-                                        GRID_UNIT * food_pos.y as f32,
+                                        GRID_UNIT * head_pos.x as f32,
+                                        GRID_UNIT * head_pos.y as f32,
                                         0.0,
                                     )),
                                     sprite: Sprite {
@@ -278,24 +332,10 @@ fn snake_movement_system(
                                     ..Default::default()
                                 })
                                 .with(SnakeHead)
-                                .with(*food_pos)
+                                .with(head_pos)
                                 .current_entity()
                                 .unwrap(),
                         );
-
-                        println!("{:?}", free_locations.0);
-
-                        let new_pos = get_random_location(&free_locations);
-
-                        println!("{:?}", new_pos);
-
-                        food_pos.x = new_pos.x;
-                        food_pos.y = new_pos.y;
-
-                        *food_translation.0.x_mut() = GRID_UNIT * food_pos.x as f32;
-                        *food_translation.0.y_mut() = GRID_UNIT * food_pos.y as f32;
-
-                        free_locations.0.remove(&*food_pos);
                     } else {
                         free_locations
                             .0
@@ -336,8 +376,6 @@ fn snake_movement_system(
             }
         }
     }
-
-    snake_timer.0.reset();
 }
 
 fn player_input_system(
@@ -346,25 +384,25 @@ fn player_input_system(
 ) {
     for (mut snake, keybinds) in &mut snake_query.iter() {
         if keyboard_input.just_pressed(keybinds.up) {
-            if let SnakeDirection::Down = snake.direction {
+            if let SnakeDirection::Down = snake.last_direction {
                 return;
             }
             snake.direction = SnakeDirection::Up;
         }
         if keyboard_input.just_pressed(keybinds.down) {
-            if let SnakeDirection::Up = snake.direction {
+            if let SnakeDirection::Up = snake.last_direction {
                 return;
             }
             snake.direction = SnakeDirection::Down;
         }
         if keyboard_input.just_pressed(keybinds.left) {
-            if let SnakeDirection::Right = snake.direction {
+            if let SnakeDirection::Right = snake.last_direction {
                 return;
             }
             snake.direction = SnakeDirection::Left;
         }
         if keyboard_input.just_pressed(keybinds.right) {
-            if let SnakeDirection::Left = snake.direction {
+            if let SnakeDirection::Left = snake.last_direction {
                 return;
             }
             snake.direction = SnakeDirection::Right;
@@ -378,7 +416,7 @@ fn snake_collision_system(
 ) {
     for (_head, pos) in &mut head_query.iter() {
         if pos.x > GRID_SIZE || pos.x < -GRID_SIZE || pos.y > GRID_SIZE || pos.y < -GRID_SIZE {
-            state.stage = GameStateStage::PostGameLose;
+            state.stage = GameStateStage::PostGame;
         }
     }
 }
@@ -388,42 +426,64 @@ fn post_game_system(
     time: Res<Time>,
     mut state: ResMut<GameState>,
     mut timer: ResMut<PostGameTimer>,
+    mut snake_query: Query<(&Snake, Entity)>,
+    mut food_query: Query<(&Food, Entity)>,
 ) {
-    let win = match state.stage {
-        GameStateStage::PostGameLose => false,
-        GameStateStage::PostGameWin => true,
+    match state.stage {
+        GameStateStage::PostGame => {}
         _ => return,
     };
-
-    if timer.0.elapsed == 0.0 {
-        if win {
-            scene_init_win(&mut commands);
-        } else {
-            scene_init_lose(&mut commands);
-        }
-    }
 
     timer.0.tick(time.delta_seconds);
 
     if timer.0.finished {
-        if win {
-            scene_destroy_win(&mut commands);
-        } else {
-            scene_destroy_lose(&mut commands);
+        for (_food, food_entity) in &mut food_query.iter() {
+            for (snake, snake_entity) in &mut snake_query.iter() {
+                despawn_game_entities(&mut commands, &snake.body, food_entity, snake_entity);
+            }
         }
-
         state.stage = GameStateStage::PreGame;
         timer.0.reset();
     }
 }
 
-fn scene_init_win(mut commands: &mut Commands) {}
+fn pre_game_system(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut free_locations: ResMut<FreeLocations>,
+    time: Res<Time>,
+    mut state: ResMut<GameState>,
+    mut timer: ResMut<PreGameTimer>,
+    mut snake_timer: ResMut<SnakeMovementTimer>,
+) {
+    match state.stage {
+        GameStateStage::PreGame => {}
+        _ => return,
+    };
 
-fn scene_destroy_win(mut commands: &mut Commands) {}
+    // This system is called before the time is updated. We need to return to prevent spawning duplicates
+    if time.delta_seconds == 0.0 {
+        return;
+    }
 
-fn scene_init_lose(mut commands: &mut Commands) {}
+    if timer.0.elapsed == 0.0 {
+        spawn_game_entities(&mut commands, &mut materials, &mut free_locations);
+    }
 
-fn scene_destroy_lose(mut commands: &mut Commands) {}
+    timer.0.tick(time.delta_seconds);
+
+    if timer.0.finished {
+        snake_timer.0.reset();
+        state.stage = GameStateStage::Running;
+        timer.0.reset();
+    }
+}
+
+fn debug_food_sprite_system(time: Res<Time>, mut query: Query<(&Food, &mut Translation)>) {
+    for (_food, mut translation) in &mut query.iter() {
+        *translation.0.x_mut() += 30.0 * time.delta_seconds;
+    }
+}
 
 fn get_random_location(locations: &ResMut<FreeLocations>) -> GridPosition {
     let index = rand::thread_rng().gen_range(0, locations.0.len());
